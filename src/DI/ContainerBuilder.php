@@ -39,6 +39,12 @@ class ContainerBuilder
 	/** @var array for auto-wiring */
 	private $classes = FALSE;
 
+	/** @var array (className => defs) */
+	private $deps = [];
+
+	/** @var array (className => key */
+	private $keys = [];
+
 	/** @var string[] of classes excluded from auto-wiring */
 	private $excludedClasses = [];
 
@@ -66,7 +72,12 @@ class ContainerBuilder
 		if (isset($this->definitions[$name])) {
 			throw new Nette\InvalidStateException("Service '$name' has already been added.");
 		}
-		return $this->definitions[$name] = $definition ?: new ServiceDefinition;
+		$rt = $this->definitions[$name] = $definition ?: new ServiceDefinition;
+
+		$depending = $this->getDependingClasses($rt);
+		foreach ($depending as $class) $this->keys[$class] = FALSE;
+
+		return $rt;
 	}
 
 
@@ -78,6 +89,11 @@ class ContainerBuilder
 	public function removeDefinition($name)
 	{
 		$name = isset($this->aliases[$name]) ? $this->aliases[$name] : $name;
+		if (!isset($this->definitions[$name])) return;
+
+		$depending = $this->getDependingClasses($this->definitions[$name]);
+		foreach ($depending as $class) $this->keys[$class] = FALSE;
+
 		unset($this->definitions[$name]);
 	}
 
@@ -201,16 +217,16 @@ class ContainerBuilder
 			}
 		}
 
-		$classes = $this->getClassList();
-		if (empty($classes[$class][TRUE])) {
+		$xxx = $this->getClassEntry($class);
+		if (empty($xxx[TRUE])) {
 			self::checkCase($class);
-			return;
+			return NULL;
 
-		} elseif (count($classes[$class][TRUE]) === 1) {
-			return $classes[$class][TRUE][0];
+		} elseif (count($xxx[TRUE]) === 1) {
+			return $xxx[TRUE][0];
 
 		} else {
-			$list = $classes[$class][TRUE];
+			$list = $xxx[TRUE];
 			$hint = count($list) === 2 && ($tmp = strpos($list[0], '.') xor strpos($list[1], '.'))
 				? '. If you want to overwrite service ' . $list[$tmp ? 0 : 1] . ', give it proper name.'
 				: '';
@@ -229,9 +245,9 @@ class ContainerBuilder
 		$class = ltrim($class, '\\');
 		self::checkCase($class);
 		$found = [];
-		$classes = $this->getClassList();
-		if (!empty($classes[$class])) {
-			foreach (array_merge(...array_values($classes[$class])) as $name) {
+		$xxx = $this->getClassEntry($class);
+		if ($xxx !== NULL) {
+			foreach (array_merge(...array_values($xxx)) as $name) {
 				$found[$name] = $this->definitions[$name];
 			}
 		}
@@ -259,11 +275,50 @@ class ContainerBuilder
 	private function getClassList()
 	{
 		static $prev;
-		if ($this->classes !== FALSE && $prev !== serialize($this->definitions)) {
+		if ($this->classes !== FALSE && FALSE && $prev !== serialize($this->definitions)) {
 			$this->prepareClassList();
 			$prev = serialize($this->definitions);
 		}
 		return $this->classes ?: [];
+	}
+
+
+	private function getClassEntry($class)
+	{
+		if ($this->classes === FALSE) {
+			return NULL;
+		}
+
+		if (isset($this->classes[$class])) {
+//			var_dump($this->deps[$class]);
+
+			if ($this->keys[$class] === FALSE || serialize($this->deps[$class]) !== $this->keys[$class]) {
+				$before = $this->classes;
+				$this->prepareClassList();
+				$after = $this->classes;
+				assert(serialize($this->deps[$class]) === $this->keys[$class]);
+				assert($before !== $after);
+			} else {
+
+				$before = $this->classes;
+				$this->prepareClassList();
+				$after = $this->classes;
+
+				if ($before !== $after) {
+					var_dump($before);
+					var_dump($after);
+				}
+
+				assert($before === $after);
+
+			}
+
+		} else {
+			$this->prepareClassList(); // TODO: better
+		}
+
+//		$this->prepareClassList();
+		return isset($this->classes[$class]) ? $this->classes[$class] : NULL;
 	}
 
 
@@ -301,6 +356,8 @@ class ContainerBuilder
 		$this->addDefinition(self::THIS_CONTAINER)->setClass(Container::class);
 
 		$this->classes = FALSE;
+		$this->deps = [];
+		$this->keys = [];
 
 		foreach ($this->definitions as $name => $def) {
 			// prepare generated factories
@@ -349,12 +406,24 @@ class ContainerBuilder
 			if ($class = $def->getImplement() ?: $def->getClass()) {
 				foreach (class_parents($class) + class_implements($class) + [$class] as $parent) {
 					$this->classes[$parent][$def->isAutowired() && empty($excludedClasses[$parent])][] = (string) $name;
+					$this->deps[$parent][$name] = $def;
 				}
 			}
 		}
 
 		foreach ($this->classes as $class => $foo) {
 			$this->addDependency((string) (new ReflectionClass($class))->getFileName());
+			$this->keys[$class] = serialize($this->deps[$class]);
+		}
+	}
+
+
+	private function getDependingClasses($def)
+	{
+		if ($class = $def->getImplement() ?: $def->getClass()) {
+			return array_values(class_parents($class) + class_implements($class) + [$class]);
+		} else {
+			return [];
 		}
 	}
 
